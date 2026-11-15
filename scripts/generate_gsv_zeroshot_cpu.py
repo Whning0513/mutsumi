@@ -11,6 +11,9 @@ from pathlib import Path
 
 ROOT = Path(os.environ.get("VOCA_ROOT", Path(__file__).resolve().parent.parent))
 REPO = ROOT / "frameworks/GPT-SoVITS"
+sys.path.insert(0, str(ROOT))
+
+from voca.audio import DEFAULT_OUTPUT_GAIN, DEFAULT_PEAK_LIMIT_DBFS, apply_gain_array, gain_db as multiplier_to_db
 
 PROMPT_TEXT = "请按参考音色自然朗读。"
 TARGET_RMS_DBFS = -27.0
@@ -33,6 +36,9 @@ def main() -> None:
     parser.add_argument("--temperature", type=float, default=0.6)
     parser.add_argument("--speed", type=float, default=1.0)
     parser.add_argument("--target-rms-dbfs", type=float, default=TARGET_RMS_DBFS)
+    parser.add_argument("--output-gain", type=float, default=DEFAULT_OUTPUT_GAIN,
+                        help="Linear output gain multiplier; default is 3x")
+    parser.add_argument("--peak-limit-dbfs", type=float, default=DEFAULT_PEAK_LIMIT_DBFS)
     args = parser.parse_args()
 
     root = args.root.expanduser().resolve()
@@ -133,9 +139,11 @@ def main() -> None:
         gain = 0.98 / peak
         gain_db = 20.0 * math.log10(gain)
     audio = audio * gain
+    audio = apply_gain_array(audio, args.output_gain, args.peak_limit_dbfs)
     output.parent.mkdir(parents=True, exist_ok=True)
     sf.write(str(output), audio, sample_rate, format="WAV", subtype="PCM_16")
-    print(f"Saved {output}; level adjustment {gain_db:+.2f} dB", flush=True)
+    print(f"Saved {output}; RMS target adjustment {gain_db:+.2f} dB; output gain ×{args.output_gain:g} "
+          f"({multiplier_to_db(args.output_gain):+.2f} dB), peak limit {args.peak_limit_dbfs:g} dBFS", flush=True)
     print(f"Generation took {time.perf_counter() - started:.1f}s", flush=True)
 
 

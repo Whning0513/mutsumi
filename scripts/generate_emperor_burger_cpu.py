@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -14,13 +15,20 @@ DEFAULT_SPEAKERS = {
     "mortis": "mujica_mortis",
 }
 
+DEFAULT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(DEFAULT_ROOT))
+from voca.audio import DEFAULT_OUTPUT_GAIN, DEFAULT_PEAK_LIMIT_DBFS, apply_gain_array, gain_db
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent)
+    parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
     parser.add_argument("--model", type=Path)
     parser.add_argument("--text-file", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--output-gain", type=float, default=DEFAULT_OUTPUT_GAIN,
+                        help="Linear output gain multiplier; default is 3x")
+    parser.add_argument("--peak-limit-dbfs", type=float, default=DEFAULT_PEAK_LIMIT_DBFS)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
     root = args.root.expanduser().resolve()
@@ -58,8 +66,10 @@ def main() -> None:
         started = time.perf_counter()
         with torch.inference_mode():
             waveforms, sample_rate = model.generate_custom_voice(text=text, language="Chinese", speaker=speaker)
-        sf.write(str(output_path), waveforms[0], sample_rate, format="WAV", subtype="PCM_16")
-        print(f"Saved {output_path}; {sample_rate} Hz; {len(waveforms[0]) / sample_rate:.2f}s; "
+        audio = apply_gain_array(waveforms[0], args.output_gain, args.peak_limit_dbfs)
+        sf.write(str(output_path), audio, sample_rate, format="WAV", subtype="PCM_16")
+        print(f"Saved {output_path}; {sample_rate} Hz; {len(audio) / sample_rate:.2f}s; "
+              f"output gain ×{args.output_gain:g} ({gain_db(args.output_gain):+.2f} dB); "
               f"inference {time.perf_counter() - started:.1f}s", flush=True)
 
 

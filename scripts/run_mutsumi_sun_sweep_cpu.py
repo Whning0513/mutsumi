@@ -29,6 +29,9 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Print work without loading models or writing files")
     parser.add_argument("--overwrite", action="store_true", help="Replace outputs with matching names")
     parser.add_argument("--text-file", type=Path)
+    parser.add_argument("--output-gain", type=float, default=3.0,
+                        help="Linear gain multiplier applied to final RVC variants")
+    parser.add_argument("--peak-limit-dbfs", type=float, default=-1.0)
     args = parser.parse_args()
 
     root = args.root.expanduser().resolve()
@@ -50,7 +53,7 @@ def main() -> None:
 
     source_command = [str(qwen_python), str(root / "scripts/generate_qwen_voice_cpu.py"),
                       "--root", str(root), "--model", str(model), "--speaker", "mujica_mutsumi",
-                      "--text-file", str(text_path), "--output", str(source_path)]
+                      "--text-file", str(text_path), "--output", str(source_path), "--output-gain", "1.0"]
     print("Source command:", " ".join(source_command), flush=True)
     if not args.skip_source and not args.dry_run:
         if source_path.exists() and not args.overwrite:
@@ -88,6 +91,10 @@ def main() -> None:
         print(f"\nRVC variant {label}: {' '.join(command)}", flush=True)
         if not args.dry_run:
             subprocess.run(command, cwd=framework, env=env, check=True)
+            gain_command = [str(qwen_python), str(root / "scripts/apply_gain_wav.py"),
+                            "--input", str(output_path), "--output-gain", str(args.output_gain),
+                            "--peak-limit-dbfs", str(args.peak_limit_dbfs)]
+            subprocess.run(gain_command, cwd=root, env=env, check=True)
     if args.dry_run:
         print("No files written.")
 

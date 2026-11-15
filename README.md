@@ -18,7 +18,9 @@ Edit the ignored `config/local.toml` to set the remote CPU host and project path
 - **Quiet Mutsumi**: Qwen source speech followed by RVC at `index=0.15`, `pitch=0`, `protect=0.45`.
 - **Daily Mutsumi**: Qwen source speech followed by RVC at `index=0.30`, `pitch=-1`, `protect=0.50`.
 - **Sobbing Mutsumi v1**: short-data GPT-SoVITS tuning with a local five-second reference clip.
-- **Excited Mutsumi**: the selected GSV output itself. It stays as unpolished GSV audio; no automatic RVC pass or loudness-matched derivative replaces it.
+- **Excited Mutsumi**: the selected GSV output itself. It stays as unpolished GSV audio; its louder companion applies output gain only and never replaces the original.
+
+New synthesized deliverables default to a 3× linear amplitude gain (+9.54 dB), with a -1 dBFS peak limiter. Original selected baselines remain unchanged; `*_音量x3.wav` companions are provided for louder playback and video work.
 
 The confirmed WAVs, models, training/reference audio, dialogue text, and video assets remain in the local workspace and are excluded from this public repository. The repo tracks reusable code, profile settings, and operating notes. A local checkout can open the corresponding baseline files under `outputs/基线/`.
 

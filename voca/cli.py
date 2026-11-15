@@ -18,6 +18,7 @@ from typing import Any, Sequence
 from urllib.parse import quote
 
 from .config import ProjectConfig, load_config, load_profiles
+from .audio import DEFAULT_OUTPUT_GAIN, DEFAULT_PEAK_LIMIT_DBFS, apply_gain_to_file, gain_db
 
 
 MEDIA_SUFFIXES = {".wav", ".flac", ".mp3", ".m4a", ".aac", ".ogg", ".mp4", ".mov", ".mkv", ".webm"}
@@ -80,6 +81,10 @@ def synthesize(
         raise ValueError(f"Unsupported profile route: {route!r}")
     if not text.strip():
         raise ValueError("Synthesis text is empty")
+    audio_config = config.values.get("audio", {})
+    output_gain = float(profile.get("output_gain", audio_config.get("output_gain", DEFAULT_OUTPUT_GAIN)))
+    peak_limit_dbfs = float(audio_config.get("peak_limit_dbfs", DEFAULT_PEAK_LIMIT_DBFS))
+    gain_db(output_gain)
     output = output.expanduser().resolve()
     if output.exists() and not overwrite:
         raise FileExistsError(f"Output already exists (pass --overwrite to replace it): {output}")
@@ -110,6 +115,7 @@ def synthesize(
                     "--top-k", str(profile.get("top_k", 15)), "--top-p", str(profile.get("top_p", 0.6)),
                     "--temperature", str(profile.get("temperature", 0.6)), "--speed", str(profile.get("speed", 1.0)),
                     "--target-rms-dbfs", str(profile.get("target_rms_dbfs", -27.0)),
+                    "--output-gain", "1.0",
                 ]
                 assignments = {
                     "CUDA_VISIBLE_DEVICES": "", "OMP_NUM_THREADS": str(config.runtime.get("threads", 32)),
@@ -130,7 +136,7 @@ def synthesize(
                 rvc_index = _asset_path(config, config.remote["models"]["rvc_index"])
                 qwen_cmd = [qwen_python, qwen_script, "--root", root, "--model", qwen_model,
                             "--speaker", str(profile.get("qwen_speaker", "mujica_mutsumi")),
-                            "--text-file", remote_text, "--output", source]
+                            "--text-file", remote_text, "--output", source, "--output-gain", "1.0"]
                 _remote_run(config, _remote_shell(config, _env_command({
                     "CUDA_VISIBLE_DEVICES": "", "OMP_NUM_THREADS": str(config.runtime.get("threads", 32)),
                     "MKL_NUM_THREADS": str(config.runtime.get("threads", 32)), "OPENBLAS_NUM_THREADS": "1",
@@ -152,6 +158,8 @@ def synthesize(
             if route == "gsv":
                 _remote_run(config, _remote_shell(config, _env_command(assignments, command)))
             _run(["scp", f"{host}:{remote_output}", str(output)])
+            apply_gain_to_file(output, output_gain, peak_limit_dbfs)
+            print(f"Applied output gain ×{output_gain:g} ({gain_db(output_gain):+.2f} dB), peak limit {peak_limit_dbfs:g} dBFS")
         finally:
             subprocess.run(["ssh", "-T", host, f"rm -rf {shlex.quote(stage)}"], check=False)
     print(f"Saved {output}")
@@ -418,6 +426,13 @@ def command_sweep(args: argparse.Namespace, config: ProjectConfig) -> None:
     script = config.remote_path("scripts/run_mutsumi_sun_sweep_cpu.py")
     python = _remote_python(config, "qwen_python", ".venv-qwen/bin/python")
     command = [python, script, "--root", str(config.remote["root"])]
+    gain = args.output_gain
+    if gain is None:
+        gain = float(config.values.get("audio", {}).get("output_gain", DEFAULT_OUTPUT_GAIN))
+    peak_limit_dbfs = args.peak_limit_dbfs
+    if peak_limit_dbfs is None:
+        peak_limit_dbfs = float(config.values.get("audio", {}).get("peak_limit_dbfs", DEFAULT_PEAK_LIMIT_DBFS))
+    command += ["--output-gain", str(gain), "--peak-limit-dbfs", str(peak_limit_dbfs)]
     if args.variants:
         command += ["--variants", args.variants]
     if args.source_only:
@@ -534,7 +549,7 @@ def build_parser() -> argparse.ArgumentParser:
     synth.add_argument("--overwrite", action="store_true")
     for option, kind in (("index-rate", float), ("pitch", int), ("protect", float), ("rms-mix-rate", float),
                          ("top-k", int), ("top-p", float), ("temperature", float), ("speed", float),
-                         ("target-rms-dbfs", float)):
+                         ("target-rms-dbfs", float), ("output-gain", float)):
         synth.add_argument(f"--{option}", type=kind, default=None)
     manifest = sub.add_parser("manifest", help="Write a hash and media metadata sidecar")
     manifest.add_argument("media")
@@ -558,6 +573,9 @@ def build_parser() -> argparse.ArgumentParser:
     sweep.add_argument("--skip-source", action="store_true")
     sweep.add_argument("--dry-run", action="store_true")
     sweep.add_argument("--overwrite", action="store_true")
+    sweep.add_argument("--output-gain", type=float, default=None, help="Linear gain multiplier (default from [audio])")
+    sweep.add_argument("--peak-limit-dbfs", type=float, default=None,
+                       help="Peak ceiling in dBFS (default from [audio])")
     video = sub.add_parser("video", help="Align subtitles and render video from a still or video background")
     bg = video.add_mutually_exclusive_group(required=True)
     bg.add_argument("--image")
@@ -605,9 +623,10 @@ def main() -> None:
         elif args.command == "synth":
             text = args.text if args.text is not None else Path(args.text_file).expanduser().read_text(encoding="utf-8-sig")
             overrides = {key.replace("-", "_"): getattr(args, key.replace("-", "_")) for key in
-                         ("index-rate", "pitch", "protect", "rms-mix-rate", "top-k", "top-p", "temperature", "speed", "target-rms-dbfs")}
+                         ("index-rate", "pitch", "protect", "rms-mix-rate", "top-k", "top-p", "temperature", "speed", "target-rms-dbfs", "output-gain")}
             selected_profile = dict(_profile(config, args.profile))
             selected_profile.update({key: value for key, value in overrides.items() if value is not None})
+            selected_profile.setdefault("output_gain", float(config.values.get("audio", {}).get("output_gain", DEFAULT_OUTPUT_GAIN)))
             synthesize(config, args.profile, text, Path(args.output), overrides, args.overwrite)
             command_manifest(argparse.Namespace(media=args.output, profile=args.profile,
                 parameters=json.dumps(selected_profile, ensure_ascii=False), output=None), config)

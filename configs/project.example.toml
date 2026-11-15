@@ -24,3 +24,8 @@ interop_threads = 4
 trial_dir = "outputs/试听试验"
 baseline_dir = "outputs/基线"
 archive_dir = "outputs/archieve"
+
+[audio]
+# Linear amplitude multiplier: 3.0 is approximately +9.54 dB.
+output_gain = 3.0
+peak_limit_dbfs = -1.0

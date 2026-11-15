@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -19,11 +20,17 @@ def main() -> None:
     parser.add_argument("--text-file", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--threads", type=int, default=32)
+    parser.add_argument("--output-gain", type=float, default=3.0,
+                        help="Linear output gain multiplier; default is 3x")
+    parser.add_argument("--peak-limit-dbfs", type=float, default=-1.0)
     args = parser.parse_args()
     if bool(args.text) == bool(args.text_file):
         parser.error("pass exactly one of --text or --text-file")
 
     root = args.root.expanduser().resolve()
+    sys.path.insert(0, str(root))
+    from voca.audio import apply_gain_array, gain_db
+
     model_path = args.model or root / "models/archive/qwen3-tts-bang-dream"
     text = args.text if args.text is not None else args.text_file.read_text(encoding="utf-8-sig").strip()
     if not text.strip():
@@ -56,8 +63,10 @@ def main() -> None:
         )
     output = args.output.expanduser().resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
-    sf.write(str(output), waveforms[0], sample_rate, format="WAV", subtype="PCM_16")
-    print(f"Saved {output}; {sample_rate} Hz; {len(waveforms[0]) / sample_rate:.2f}s", flush=True)
+    audio = apply_gain_array(waveforms[0], args.output_gain, args.peak_limit_dbfs)
+    sf.write(str(output), audio, sample_rate, format="WAV", subtype="PCM_16")
+    print(f"Saved {output}; {sample_rate} Hz; {len(audio) / sample_rate:.2f}s; "
+          f"output gain ×{args.output_gain:g} ({gain_db(args.output_gain):+.2f} dB)", flush=True)
 
 
 if __name__ == "__main__":
