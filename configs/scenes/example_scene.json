@@ -9,6 +9,15 @@
     {
       "profile": "mutsumi_excited_gsv",
       "text": "这里替换成第二句台词！",
+      "pause_after_ms": 180
+    },
+    {
+      "profile": "mutsumi_excited_gsv",
+      "text": "这里替换成第三句台词。",
+      "parameters": {
+        "temperature": 0.68,
+        "speed": 1.0
+      },
       "pause_after_ms": 0
     }
   ]

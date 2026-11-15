@@ -5,6 +5,7 @@ import csv
 import hashlib
 import html
 import json
+import math
 import os
 import shlex
 import shutil
@@ -83,8 +84,10 @@ def synthesize(
         raise ValueError("Synthesis text is empty")
     audio_config = config.values.get("audio", {})
     output_gain = float(profile.get("output_gain", audio_config.get("output_gain", DEFAULT_OUTPUT_GAIN)))
-    peak_limit_dbfs = float(audio_config.get("peak_limit_dbfs", DEFAULT_PEAK_LIMIT_DBFS))
+    peak_limit_dbfs = float(profile.get("peak_limit_dbfs", audio_config.get("peak_limit_dbfs", DEFAULT_PEAK_LIMIT_DBFS)))
     gain_db(output_gain)
+    if not math.isfinite(peak_limit_dbfs) or not -24.0 <= peak_limit_dbfs <= 0:
+        raise ValueError("Peak limit must be between -24 and 0 dBFS")
     output = output.expanduser().resolve()
     if output.exists() and not overwrite:
         raise FileExistsError(f"Output already exists (pass --overwrite to replace it): {output}")
@@ -165,6 +168,106 @@ def synthesize(
     print(f"Saved {output}")
 
 
+def synthesize_gsv_batch(
+    config: ProjectConfig,
+    profile_name: str,
+    items: Sequence[dict[str, Any]],
+    overwrite: bool = False,
+) -> None:
+    """Generate multiple GSV lines in one remote process so weights load once."""
+    profile = dict(_profile(config, profile_name))
+    if profile.get("route") != "gsv":
+        raise ValueError(f"Batch model reuse currently supports GSV profiles, got {profile.get('route')!r}")
+    if not items:
+        return
+    audio_config = config.values.get("audio", {})
+    jobs = []
+    for index, item in enumerate(items, 1):
+        text = str(item.get("text", "")).strip()
+        if not text:
+            raise ValueError(f"Batch item {index} has empty text")
+        item_profile = dict(_profile(config, str(item.get("profile_name", profile_name))))
+        item_profile.update(item.get("overrides", {}))
+        output = Path(item["output"]).expanduser().resolve()
+        if output.exists() and not overwrite:
+            raise FileExistsError(f"Output already exists (pass --overwrite to replace it): {output}")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output_gain = float(item_profile.get("output_gain", audio_config.get("output_gain", DEFAULT_OUTPUT_GAIN)))
+        peak_limit_dbfs = float(item_profile.get("peak_limit_dbfs", audio_config.get("peak_limit_dbfs", DEFAULT_PEAK_LIMIT_DBFS)))
+        gain_db(output_gain)
+        if not -24.0 <= peak_limit_dbfs <= 0:
+            raise ValueError(f"Batch item {index} peak limit must be between -24 and 0 dBFS")
+        jobs.append({
+            "text": text,
+            "output": output,
+            "gain": output_gain,
+            "peak_limit_dbfs": peak_limit_dbfs,
+            "profile": item_profile,
+            "batch_name": f"line-{index:03}.wav",
+        })
+
+    host = str(config.remote.get("host", ""))
+    if not host:
+        raise ValueError("Set [remote].host in the project config first")
+    stage = f"/tmp/voca-batch-{uuid.uuid4().hex[:12]}"
+    remote_batch = stage + "/batch.json"
+    remote_output_dir = stage + "/outputs"
+    payload = {
+        "items": [
+            {
+                "text": job["text"],
+                "output": job["batch_name"],
+                "parameters": {
+                    "top_k": int(job["profile"].get("top_k", 15)),
+                    "top_p": float(job["profile"].get("top_p", 0.6)),
+                    "temperature": float(job["profile"].get("temperature", 0.6)),
+                    "speed": float(job["profile"].get("speed", 1.0)),
+                    "target_rms_dbfs": float(job["profile"].get("target_rms_dbfs", -27.0)),
+                    "output_gain": 1.0,
+                },
+            }
+            for job in jobs
+        ]
+    }
+    with tempfile.TemporaryDirectory(prefix="voca-batch-") as local_temp:
+        request_path = Path(local_temp) / "batch.json"
+        request_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        _run(["ssh", "-T", host, f"mkdir -p {shlex.quote(stage)} {shlex.quote(remote_output_dir)}"])
+        try:
+            _run(["scp", str(request_path), f"{host}:{remote_batch}"])
+            root = str(config.remote["root"]).rstrip("/")
+            script = config.remote_path("scripts/generate_gsv_zeroshot_cpu.py")
+            python = _remote_python(config, "gsv_python", ".venv-gpt-sovits-cpu/bin/python")
+            gsv_framework = _asset_path(config, config.remote["models"]["gsv_root"])
+            base = jobs[0]["profile"]
+            command = [
+                python, script, "--root", root,
+                "--pretrained-root", _asset_path(config, config.remote["models"].get("gsv_pretrained", "models/gpt-sovits/pretrained_models")),
+                "--batch-file", remote_batch, "--output-dir", remote_output_dir,
+                "--reference", _asset_path(config, base["reference_audio"]),
+                "--prompt-text-file", _asset_path(config, base["reference_prompt_file"]),
+                "--sovits-weight", _asset_path(config, base["sovits_weight"]),
+                "--gpt-weight", _asset_path(config, base["gpt_weight"]),
+                "--top-k", str(base.get("top_k", 15)), "--top-p", str(base.get("top_p", 0.6)),
+                "--temperature", str(base.get("temperature", 0.6)), "--speed", str(base.get("speed", 1.0)),
+                "--target-rms-dbfs", str(base.get("target_rms_dbfs", -27.0)), "--output-gain", "1.0",
+            ]
+            assignments = {
+                "CUDA_VISIBLE_DEVICES": "", "OMP_NUM_THREADS": str(config.runtime.get("threads", 32)),
+                "MKL_NUM_THREADS": str(config.runtime.get("threads", 32)), "OPENBLAS_NUM_THREADS": "1",
+                "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
+                "PYTHONPATH": f"{gsv_framework}:{gsv_framework}/GPT_SoVITS:{_asset_path(config, '.venv-qwen/lib/python' + str(config.remote.get('python_site_version', '3.10')) + '/site-packages')}",
+            }
+            _remote_run(config, _remote_shell(config, _env_command(assignments, command)))
+            for job in jobs:
+                remote_wav = remote_output_dir + "/" + str(job["batch_name"])
+                _run(["scp", f"{host}:{remote_wav}", str(job["output"])])
+                apply_gain_to_file(job["output"], float(job["gain"]), float(job["peak_limit_dbfs"]))
+                print(f"Saved {job['output']} (×{job['gain']:g})", flush=True)
+        finally:
+            subprocess.run(["ssh", "-T", host, f"rm -rf {shlex.quote(stage)}"], check=False)
+
+
 def find_ffprobe() -> str:
     executable = _which("ffprobe")
     if not executable:
@@ -195,7 +298,7 @@ def command_init_config(config: ProjectConfig) -> None:
     print(f"Created {destination}; edit [remote].host/root for your machine")
 
 
-def command_doctor(config: ProjectConfig, remote: bool) -> None:
+def command_doctor(config: ProjectConfig, remote: bool, profile_name: str | None = None) -> None:
     print(f"Project root: {config.root}")
     print(f"Config:       {config.file}")
     print(f"Remote:       {config.remote.get('host', '(unset)')}:{config.remote.get('root', '(unset)')}")
@@ -216,6 +319,41 @@ def command_doctor(config: ProjectConfig, remote: bool) -> None:
         ]
         command = " && ".join(checks) + " && echo 'remote project root and CPU environments: OK'"
         _remote_run(config, command)
+        if profile_name:
+            profile = _profile(config, profile_name)
+            required_files: list[tuple[str, str]] = []
+            required_dirs: list[tuple[str, str]] = []
+            if profile.get("route") == "gsv":
+                required_dirs += [("GPT-SoVITS framework", "frameworks/GPT-SoVITS")]
+                required_files += [
+                    ("reference audio", str(profile["reference_audio"])),
+                    ("reference transcript", str(profile["reference_prompt_file"])),
+                    ("SoVITS weight", str(profile["sovits_weight"])),
+                    ("GPT weight", str(profile["gpt_weight"])),
+                ]
+                required_files += [("GSV generator", "scripts/generate_gsv_zeroshot_cpu.py"),
+                                   ("audio helper", "voca/audio.py")]
+            elif profile.get("route") == "qwen_rvc":
+                required_dirs += [("Qwen model", str(config.remote.get("models", {}).get("qwen", "models/archive/qwen3-tts-bang-dream"))),
+                                  ("RVC framework", "frameworks/RVC")]
+                required_files += [
+                    ("RVC model", str(config.remote["models"]["rvc_model"])),
+                    ("RVC index", str(config.remote["models"]["rvc_index"])),
+                    ("RVC inference script", "frameworks/RVC/infer/cli.py"),
+                    ("Qwen generator", "scripts/generate_qwen_voice_cpu.py"),
+                    ("audio helper", "voca/audio.py"),
+                ]
+            else:
+                raise ValueError(f"Unsupported profile route: {profile.get('route')!r}")
+            profile_checks = [
+                f"test -d {shlex.quote(config.remote_path(path))} || {{ echo {shlex.quote('MISSING ' + label)}; exit 1; }}"
+                for label, path in required_dirs
+            ] + [
+                f"test -f {shlex.quote(config.remote_path(path))} || {{ echo {shlex.quote('MISSING ' + label)}; exit 1; }}"
+                for label, path in required_files
+            ]
+            profile_command = " && ".join(profile_checks) + f" && echo {shlex.quote('profile assets OK: ' + profile_name)}"
+            _remote_run(config, profile_command)
 
 
 def command_env_snapshot(args: argparse.Namespace, config: ProjectConfig) -> None:
@@ -454,15 +592,45 @@ def command_scene_validate(args: argparse.Namespace, config: ProjectConfig) -> d
     if not isinstance(scene.get("lines"), list) or not scene["lines"]:
         raise ValueError("Scene must contain a non-empty lines array")
     profiles = load_profiles(config)
+    gsv_parameters = {"top_k", "top_p", "temperature", "speed", "target_rms_dbfs", "output_gain", "peak_limit_dbfs"}
+    rvc_parameters = {"index_rate", "pitch", "protect", "rms_mix_rate", "output_gain", "peak_limit_dbfs", "qwen_speaker", "f0_method"}
     for index, line in enumerate(scene["lines"], 1):
         if not isinstance(line, dict):
             raise ValueError(f"line {index}: expected a JSON object")
-        if line.get("profile") not in profiles:
+        profile_name = line.get("profile")
+        if not isinstance(profile_name, str) or profile_name not in profiles:
             raise ValueError(f"line {index}: unknown profile {line.get('profile')!r}")
         if not isinstance(line.get("text"), str) or not line["text"].strip():
             raise ValueError(f"line {index}: text is required")
-        if int(line.get("pause_after_ms", 0)) < 0:
-            raise ValueError(f"line {index}: pause_after_ms cannot be negative")
+        pause = line.get("pause_after_ms", 0)
+        if isinstance(pause, bool) or not isinstance(pause, (int, float)) or int(pause) != pause or pause < 0:
+            raise ValueError(f"line {index}: pause_after_ms must be a non-negative integer")
+        parameters = line.get("parameters", {})
+        if not isinstance(parameters, dict):
+            raise ValueError(f"line {index}: parameters must be an object")
+        allowed = gsv_parameters if profiles[profile_name].get("route") == "gsv" else rvc_parameters
+        unknown = sorted(set(parameters) - allowed)
+        if unknown:
+            raise ValueError(f"line {index}: unsupported parameter(s) for {profile_name}: {', '.join(unknown)}")
+        for key, value in parameters.items():
+            if key in {"qwen_speaker", "f0_method"}:
+                if not isinstance(value, str) or not value:
+                    raise ValueError(f"line {index}: {key} must be a non-empty string")
+                continue
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"line {index}: {key} must be numeric")
+            if not math.isfinite(float(value)):
+                raise ValueError(f"line {index}: {key} must be finite")
+            if key in {"index_rate", "protect", "rms_mix_rate", "top_p"} and not 0 <= float(value) <= 1:
+                raise ValueError(f"line {index}: {key} must be between 0 and 1")
+            if key in {"top_k", "pitch"} and int(value) != value:
+                raise ValueError(f"line {index}: {key} must be an integer")
+            if key == "top_k" and int(value) < 1:
+                raise ValueError(f"line {index}: top_k must be positive")
+            if key in {"speed", "temperature", "output_gain"} and float(value) <= 0:
+                raise ValueError(f"line {index}: {key} must be greater than 0")
+            if key == "peak_limit_dbfs" and not -24 <= float(value) <= 0:
+                raise ValueError(f"line {index}: peak_limit_dbfs must be between -24 and 0")
     print(f"Scene OK: {scene.get('title', scene_path.stem)} ({len(scene['lines'])} lines)")
     return scene
 
@@ -485,6 +653,14 @@ def command_scene_render(args: argparse.Namespace, config: ProjectConfig) -> Non
         raise FileExistsError(f"Transcript already exists (pass --overwrite to replace it): {text_output}")
     if (args.image or args.background_video) and video_output.exists() and not args.overwrite:
         raise FileExistsError(f"Video already exists (pass --overwrite to replace it): {video_output}")
+    lines_output = audio_output.with_name(audio_output.stem + "_分轨")
+    if args.keep_lines and lines_output.exists() and not args.overwrite:
+        raise FileExistsError(f"Line audio directory already exists (pass --overwrite to replace it): {lines_output}")
+    if args.keep_lines and lines_output.exists() and args.overwrite:
+        if lines_output.is_dir() and not lines_output.is_symlink():
+            shutil.rmtree(lines_output)
+        else:
+            lines_output.unlink()
     work_root = config.root / "outputs/试听试验/.voca-work" / uuid.uuid4().hex[:10]
     work_root.mkdir(parents=True, exist_ok=True)
     ffmpeg = _which("ffmpeg")
@@ -493,13 +669,44 @@ def command_scene_render(args: argparse.Namespace, config: ProjectConfig) -> Non
     concat_items: list[Path] = []
     transcript_lines: list[str] = []
     try:
+        raw_paths = [work_root / f"line-{index:03}.wav" for index in range(1, len(scene["lines"]) + 1)]
+        groups: dict[tuple[Any, ...], dict[str, Any]] = {}
+        profiles = load_profiles(config)
+        for index, line in enumerate(scene["lines"]):
+            profile_name = line["profile"]
+            profile = profiles[profile_name]
+            if profile.get("route") == "gsv":
+                group_key = (
+                    "gsv", profile.get("reference_audio"), profile.get("reference_prompt_file"),
+                    profile.get("gpt_weight"), profile.get("sovits_weight"),
+                )
+            else:
+                group_key = ("profile", profile_name)
+            group = groups.setdefault(group_key, {"profile_name": profile_name, "items": []})
+            group["items"].append({
+                "text": line["text"], "output": raw_paths[index], "overrides": line.get("parameters", {}),
+                "profile_name": profile_name,
+            })
+        for group in groups.values():
+            profile_name = group["profile_name"]
+            items = group["items"]
+            if profiles[profile_name].get("route") == "gsv":
+                synthesize_gsv_batch(config, profile_name, items)
+            else:
+                for item in items:
+                    synthesize(config, item["profile_name"], item["text"], item["output"], item["overrides"])
+
         for index, line in enumerate(scene["lines"], 1):
-            raw = work_root / f"line-{index:03}.wav"
+            raw = raw_paths[index - 1]
             canonical = work_root / f"canonical-{index:03}.wav"
-            synthesize(config, line["profile"], line["text"], raw)
             _canonicalize_audio(raw, canonical)
             concat_items.append(canonical)
             transcript_lines.append(line["text"].strip())
+            if args.keep_lines:
+                lines_output.mkdir(parents=True, exist_ok=True)
+                profile_slug = "".join(char if char.isalnum() or char in "-_" else "_" for char in line["profile"])
+                line_output = lines_output / f"line-{index:03}_{profile_slug}.wav"
+                shutil.copy2(canonical, line_output)
             pause_ms = int(line.get("pause_after_ms", 0))
             if pause_ms:
                 pause = work_root / f"pause-{index:03}.wav"
@@ -514,7 +721,27 @@ def command_scene_render(args: argparse.Namespace, config: ProjectConfig) -> Non
         _run([ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_file),
               "-c:a", "pcm_s16le", str(audio_output)])
         text_output.write_text("\n".join(transcript_lines) + "\n", encoding="utf-8")
+        if args.keep_lines:
+            line_manifest = {
+                "title": title,
+                "audio": str(audio_output),
+                "lines": [
+                    {
+                        "index": index,
+                        "file": f"line-{index:03}_{''.join(char if char.isalnum() or char in '-_' else '_' for char in line['profile'])}.wav",
+                        "profile": line["profile"],
+                        "text": line["text"],
+                        "parameters": line.get("parameters", {}),
+                        "pause_after_ms": int(line.get("pause_after_ms", 0)),
+                    }
+                    for index, line in enumerate(scene["lines"], 1)
+                ],
+            }
+            (lines_output / "lines.json").write_text(json.dumps(line_manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            (lines_output / "transcript.txt").write_text("\n".join(transcript_lines) + "\n", encoding="utf-8")
         print(f"Scene audio: {audio_output}\nTranscript:  {text_output}")
+        if args.keep_lines:
+            print(f"Line audio:  {lines_output}")
         command_manifest(argparse.Namespace(media=str(audio_output), profile=None,
             parameters=json.dumps({"scene": title, "lines": scene["lines"]}, ensure_ascii=False), output=None), config)
         if args.image or args.background_video:
@@ -534,6 +761,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("init-config", help="Create a local, git-ignored config")
     doctor = sub.add_parser("doctor", help="Show local tools and project configuration")
     doctor.add_argument("--remote", action="store_true", help="Also check SSH access and remote project root")
+    doctor.add_argument("--profile", help="With --remote, verify one profile's model and reference files")
     env = sub.add_parser("env", help="Capture environment versions")
     env_sub = env.add_subparsers(dest="env_command", required=True)
     env_snapshot = env_sub.add_parser("snapshot", help="Save local and remote pip freeze metadata locally")
@@ -603,6 +831,7 @@ def build_parser() -> argparse.ArgumentParser:
     scene_render.add_argument("--threads", type=int, default=8)
     scene_render.add_argument("--long-edge", type=int, default=2048)
     scene_render.add_argument("--normalize-audio", action="store_true")
+    scene_render.add_argument("--keep-lines", action="store_true", help="Keep canonical per-line WAVs and a lines.json manifest")
     scene_render.add_argument("--overwrite", action="store_true")
     return parser
 
@@ -615,7 +844,9 @@ def main() -> None:
         if args.command == "init-config":
             command_init_config(config)
         elif args.command == "doctor":
-            command_doctor(config, args.remote)
+            if args.profile and not args.remote:
+                raise ValueError("--profile requires --remote so model paths can be checked on the CPU host")
+            command_doctor(config, args.remote, args.profile)
         elif args.command == "env" and args.env_command == "snapshot":
             command_env_snapshot(args, config)
         elif args.command == "profiles":
