@@ -30,6 +30,7 @@ except ImportError as exc:  # pragma: no cover - exercised by the CLI error path
 
 
 PUNCTUATION = set("，。！？；：、,.!?;:")
+SUBTITLE_STYLES = ("outline", "dark-rectangle", "rounded-box", "yellow-highlight", "shadow")
 FONT_CANDIDATES = [
     "/System/Library/Fonts/STHeiti Medium.ttc",
     "/System/Library/Fonts/Hiragino Sans GB.ttc",
@@ -395,28 +396,74 @@ def render_caption(
     font: ImageFont.FreeTypeFont,
     stroke: int,
     margin_bottom: int,
+    style: str = "outline",
+    box_opacity: int = 84,
 ) -> None:
+    if style not in SUBTITLE_STYLES:
+        raise ValueError("Unknown subtitle style: {}".format(style))
+    if not 0 <= box_opacity <= 100:
+        raise ValueError("Box opacity must be between 0 and 100")
+
+    presets = {
+        "outline": {"fill": (255, 255, 255, 255), "stroke": stroke, "stroke_fill": (0, 0, 0, 255)},
+        "dark-rectangle": {
+            "fill": (255, 255, 255, 255), "stroke": 0, "stroke_fill": (0, 0, 0, 0),
+            "background": (42, 45, 49, round(255 * box_opacity / 100)), "padding": (30, 18),
+        },
+        "rounded-box": {
+            "fill": (255, 255, 255, 255), "stroke": 0, "stroke_fill": (0, 0, 0, 0),
+            "background": (18, 22, 29, round(255 * box_opacity / 100)), "padding": (38, 22), "radius": 24,
+        },
+        "yellow-highlight": {
+            "fill": (255, 224, 78, 255), "stroke": max(2, round(stroke * 0.8)), "stroke_fill": (20, 20, 20, 255),
+        },
+        "shadow": {
+            "fill": (255, 255, 255, 255), "stroke": 0, "stroke_fill": (0, 0, 0, 0),
+            "shadow": (0, 0, 0, 185), "shadow_offset": (4, 5),
+        },
+    }
+    preset = presets[style]
+    text_stroke = int(preset["stroke"])
     canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas)
-    lines = wrap_text(text, font, width - 96, stroke)
+    padding_x, padding_y = preset.get("padding", (0, 0))
+    lines = wrap_text(text, font, width - 96 - 2 * padding_x, text_stroke)
     if len(lines) > 2:
         raise ValueError("Subtitle needs more than two lines at the selected font size: {}".format(text))
 
-    boxes = [draw.textbbox((0, 0), line, font=font, stroke_width=stroke) for line in lines]
+    boxes = [draw.textbbox((0, 0), line, font=font, stroke_width=text_stroke) for line in lines]
     line_heights = [box[3] - box[1] for box in boxes]
     gap = max(2, round(font.size * 0.08))
     total_height = sum(line_heights) + gap * (len(lines) - 1)
-    y = height - margin_bottom - total_height
+    block_width = max(box[2] - box[0] for box in boxes)
+    block_left = (width - block_width) / 2
+    block_top = height - margin_bottom - total_height - 2 * padding_y
+    if "background" in preset:
+        box_left = block_left - padding_x
+        box_top = block_top
+        box_right = block_left + block_width + padding_x
+        box_bottom = height - margin_bottom
+        bounds = (round(box_left), round(box_top), round(box_right), round(box_bottom))
+        if "radius" in preset:
+            draw.rounded_rectangle(bounds, radius=int(preset["radius"]), fill=preset["background"])
+        else:
+            draw.rectangle(bounds, fill=preset["background"])
+    y = block_top + padding_y
     for line, box, line_height in zip(lines, boxes, line_heights):
         line_width = box[2] - box[0]
         x = (width - line_width) / 2.0 - box[0]
+        text_y = y - box[1]
+        shadow = preset.get("shadow")
+        if shadow:
+            offset_x, offset_y = preset["shadow_offset"]
+            draw.text((x + offset_x, text_y + offset_y), line, font=font, fill=shadow)
         draw.text(
-            (x, y - box[1]),
+            (x, text_y),
             line,
             font=font,
-            fill=(255, 255, 255, 255),
-            stroke_width=stroke,
-            stroke_fill=(0, 0, 0, 255),
+            fill=preset["fill"],
+            stroke_width=text_stroke,
+            stroke_fill=preset["stroke_fill"],
         )
         y += line_height + gap
     canvas.save(path)
@@ -440,7 +487,7 @@ def audio_duration(path: Path, ffprobe: str) -> float:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Force-align a Chinese ground-truth transcript, create SRT, and burn white outlined captions into MP4."
+        description="Force-align a Chinese ground-truth transcript, create SRT, and burn styled captions into MP4."
     )
     background = parser.add_mutually_exclusive_group(required=True)
     background.add_argument("--image", help="Still image used as the video picture")
@@ -467,6 +514,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--font-size", type=int, default=192)
     parser.add_argument("--stroke-width", type=int, default=13)
     parser.add_argument("--margin-bottom", type=int, default=120)
+    parser.add_argument("--subtitle-style", choices=SUBTITLE_STYLES, default="outline",
+                        help="Caption preset: outline, dark-rectangle, rounded-box, yellow-highlight, or shadow")
+    parser.add_argument("--box-opacity", type=int, default=84,
+                        help="Background opacity percentage for the two box styles (0-100)")
     parser.add_argument("--normalize-audio", action="store_true", help="Normalize dialogue to -16 LUFS; off by default")
     parser.add_argument("--overwrite", action="store_true", help="Replace existing video and sidecar outputs")
     return parser.parse_args()
@@ -480,6 +531,10 @@ def main() -> None:
         raise ValueError("Subtitle character limits and maximum duration must be positive.")
     if not 0 <= args.sharpen <= 1.5:
         raise ValueError("--sharpen must be between 0 and 1.5.")
+    if not 0 <= args.box_opacity <= 100:
+        raise ValueError("--box-opacity must be between 0 and 100.")
+    if args.font_size < 1 or args.stroke_width < 0 or args.margin_bottom < 0:
+        raise ValueError("Font size must be positive; stroke width and bottom margin cannot be negative.")
     image_path = Path(args.image).expanduser().resolve() if args.image else None
     background_video_path = Path(args.background_video).expanduser().resolve() if args.background_video else None
     audio_path = Path(args.audio).expanduser().resolve()
@@ -583,7 +638,7 @@ def main() -> None:
             overlay_path = Path(temp_dir) / "caption-{:03}.png".format(index)
             render_caption(
                 cue.text, overlay_path, width, height, font,
-                args.stroke_width, args.margin_bottom,
+                args.stroke_width, args.margin_bottom, args.subtitle_style, args.box_opacity,
             )
             overlays.append(overlay_path)
 
@@ -665,6 +720,7 @@ def main() -> None:
     if trimmed:
         print("Trimmed long silent gaps from {} forced-alignment span(s).".format(len(trimmed)))
     print("Embedded {} transcript-grounded subtitle cues.".format(len(cues)))
+    print("Subtitle style: {} (box opacity {}%).".format(args.subtitle_style, args.box_opacity))
     print("Video resolution: {}x{} (long edge {} pixels).".format(width, height, args.long_edge))
     print("Video: {}".format(output_path))
     print("SRT:   {}".format(srt_path))

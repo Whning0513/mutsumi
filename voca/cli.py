@@ -23,6 +23,7 @@ from .audio import DEFAULT_OUTPUT_GAIN, DEFAULT_PEAK_LIMIT_DBFS, apply_gain_to_f
 
 
 MEDIA_SUFFIXES = {".wav", ".flac", ".mp3", ".m4a", ".aac", ".ogg", ".mp4", ".mov", ".mkv", ".webm"}
+SUBTITLE_STYLES = ("outline", "dark-rectangle", "rounded-box", "yellow-highlight", "shadow")
 
 
 def _which(name: str) -> str | None:
@@ -552,6 +553,7 @@ def command_video(args: argparse.Namespace, config: ProjectConfig) -> None:
         command += ["--image", str(Path(args.image).expanduser().resolve())]
     if args.background_video:
         command += ["--background-video", str(Path(args.background_video).expanduser().resolve())]
+    command += ["--subtitle-style", args.subtitle_style, "--box-opacity", str(args.box_opacity)]
     if args.normalize_audio:
         command.append("--normalize-audio")
     if args.overwrite:
@@ -748,7 +750,7 @@ def command_scene_render(args: argparse.Namespace, config: ProjectConfig) -> Non
             video_args = argparse.Namespace(audio=str(audio_output), transcript_file=str(text_output), output=str(video_output),
                 image=args.image, background_video=args.background_video, aligner_host=args.aligner_host,
                 threads=args.threads, long_edge=args.long_edge, normalize_audio=args.normalize_audio,
-                overwrite=args.overwrite)
+                subtitle_style=args.subtitle_style, box_opacity=args.box_opacity, overwrite=args.overwrite)
             command_video(video_args, config)
     finally:
         shutil.rmtree(work_root, ignore_errors=True)
@@ -814,6 +816,9 @@ def build_parser() -> argparse.ArgumentParser:
     video.add_argument("--aligner-host")
     video.add_argument("--threads", type=int, default=8)
     video.add_argument("--long-edge", type=int, default=2048)
+    video.add_argument("--subtitle-style", choices=SUBTITLE_STYLES,
+                       default="outline", help="Caption appearance preset")
+    video.add_argument("--box-opacity", type=int, default=84, help="Background opacity for box presets (0-100)")
     video.add_argument("--normalize-audio", action="store_true")
     video.add_argument("--overwrite", action="store_true")
     scene = sub.add_parser("scene", help="Validate or render a JSON short-theater script")
@@ -830,6 +835,9 @@ def build_parser() -> argparse.ArgumentParser:
     scene_render.add_argument("--aligner-host")
     scene_render.add_argument("--threads", type=int, default=8)
     scene_render.add_argument("--long-edge", type=int, default=2048)
+    scene_render.add_argument("--subtitle-style", choices=SUBTITLE_STYLES,
+                              default="outline", help="Caption appearance preset for the rendered video")
+    scene_render.add_argument("--box-opacity", type=int, default=84, help="Background opacity for box presets (0-100)")
     scene_render.add_argument("--normalize-audio", action="store_true")
     scene_render.add_argument("--keep-lines", action="store_true", help="Keep canonical per-line WAVs and a lines.json manifest")
     scene_render.add_argument("--overwrite", action="store_true")
