@@ -1,0 +1,15 @@
+{
+  "title": "example_short_theater",
+  "lines": [
+    {
+      "profile": "mutsumi_daily_rvc",
+      "text": "这里替换成第一句台词。",
+      "pause_after_ms": 350
+    },
+    {
+      "profile": "mutsumi_excited_gsv",
+      "text": "这里替换成第二句台词！",
+      "pause_after_ms": 0
+    }
+  ]
+}

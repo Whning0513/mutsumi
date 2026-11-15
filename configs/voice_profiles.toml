@@ -1,0 +1,49 @@
+[profiles.mutsumi_no_mouth_rvc]
+name = "无口若叶睦"
+description = "Qwen 普通话源音频后接低索引 RVC；平静、少语参照。"
+route = "qwen_rvc"
+qwen_speaker = "mujica_mutsumi"
+index_rate = 0.15
+pitch = 0
+rms_mix_rate = 0.45
+protect = 0.45
+f0_method = "rmvpe"
+
+[profiles.mutsumi_daily_rvc]
+name = "日常若叶睦"
+description = "Qwen 读稿后接 RVC；已命名日常基线配方。"
+route = "qwen_rvc"
+qwen_speaker = "mujica_mutsumi"
+index_rate = 0.30
+pitch = -1
+rms_mix_rate = 0.45
+protect = 0.50
+f0_method = "rmvpe"
+
+[profiles.mutsumi_sobbing_gsv]
+name = "抽泣若叶睦 v1"
+description = "28 秒微调 GSV + 5 秒哭腔参考。"
+route = "gsv"
+reference_audio = "training_data/video_style_28sec/BV1XJpB6pEvu_5sec_cry_reference.wav"
+reference_prompt_file = "training_data/video_style_28sec/5sec_cry_reference_prompt.txt"
+gpt_weight = "models/gpt-sovits/finetuned/video_style_28sec/GPT/MutsumiVideo28sec-e15.ckpt"
+sovits_weight = "models/gpt-sovits/finetuned/video_style_28sec/SoVITS/MutsumiVideo28sec_e8_s768.pth"
+top_k = 15
+top_p = 0.6
+temperature = 0.6
+speed = 1.0
+target_rms_dbfs = -27.0
+
+[profiles.mutsumi_excited_gsv]
+name = "激动若叶睦"
+description = "用户选定的原声基线配方；不自动后接 RVC 或响度匹配。"
+route = "gsv"
+reference_audio = "training_data/video_style_28sec/BV1XJpB6pEvu_5sec_cry_reference.wav"
+reference_prompt_file = "training_data/video_style_28sec/5sec_cry_reference_prompt.txt"
+gpt_weight = "models/gpt-sovits/finetuned/video_style_28sec/GPT/MutsumiVideo28sec-e15.ckpt"
+sovits_weight = "models/gpt-sovits/finetuned/video_style_28sec/SoVITS/MutsumiVideo28sec_e8_s768.pth"
+top_k = 15
+top_p = 0.6
+temperature = 0.6
+speed = 1.0
+target_rms_dbfs = -27.0

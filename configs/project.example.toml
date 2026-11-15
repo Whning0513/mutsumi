@@ -1,0 +1,26 @@
+[project]
+local_root = ".."
+profile_file = "configs/voice_profiles.toml"
+
+[remote]
+host = "a100-whn"
+root = "/data3/whn/Project-voca"
+python_site_version = "3.10"
+qwen_python = ".venv-qwen/bin/python"
+rvc_python = ".venv-rvc-cpu/bin/python"
+gsv_python = ".venv-gpt-sovits-cpu/bin/python"
+
+[remote.models]
+qwen = "models/archive/qwen3-tts-bang-dream"
+rvc_model = "models/rvc/mutsumi-rvc/mutsumi.pth"
+rvc_index = "models/rvc/mutsumi-rvc/added_IVF345_Flat_nprobe_1_mutsumi_v2.index"
+gsv_root = "frameworks/GPT-SoVITS"
+gsv_pretrained = "models/gpt-sovits/pretrained_models"
+gsv_finetuned = "models/gpt-sovits/finetuned/video_style_28sec"
+
+[runtime]
+threads = 32
+interop_threads = 4
+trial_dir = "outputs/试听试验"
+baseline_dir = "outputs/基线"
+archive_dir = "outputs/archieve"
