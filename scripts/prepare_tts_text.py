@@ -225,6 +225,12 @@ def hard_split(text: str, max_chars: int):
     return chunks
 
 
+def split_fixed(text: str, max_chars: int):
+    """Flatten whitespace, then cut at exact character limits without punctuation logic."""
+    flattened = re.sub(r"\s+", " ", text).strip()
+    return [flattened[start : start + max_chars] for start in range(0, len(flattened), max_chars)]
+
+
 def split_long_paragraph(paragraph: str, max_chars: int):
     pieces = []
     for sentence in split_sentences(paragraph):
@@ -255,6 +261,8 @@ def split_long_paragraph(paragraph: str, max_chars: int):
 def split_tts_chunks(text: str, mode: str, max_chars: int):
     if mode == "none":
         return [text]
+    if mode == "fixed":
+        return split_fixed(text, max_chars)
     paragraphs = split_paragraphs(text)
     if not paragraphs:
         return []
@@ -396,9 +404,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mode", choices=("clean", "rewrite"), default="clean")
     parser.add_argument(
         "--split-mode",
-        choices=("auto", "paragraph", "sentence", "none"),
+        choices=("auto", "paragraph", "sentence", "fixed", "none"),
         default="auto",
-        help="Chunk by paragraphs, sentences, or automatically (default: auto)",
+        help="Chunk by paragraphs, sentences, fixed character counts, or automatically (default: auto)",
     )
     parser.add_argument("--max-chars", type=int, default=220, help="Maximum characters per chunk")
     parser.add_argument("--chunks-dir", help="Also write numbered chunk files into this directory")

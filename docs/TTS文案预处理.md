@@ -12,9 +12,19 @@ python3 scripts/prepare_tts_text.py inputs/原始文本/原文.txt \
   --output inputs/台本/tts稿.txt
 ```
 
+## 从连续文案池取段
+
+长期积累的原文放在 `inputs/原始文本/文案池.txt`。用 `@@@ id=唯一ID status=待取 @@@` 和 `@@@ end @@@` 明确界定每一段；取用时按 ID 整段选取，不从段落中按句子或语义抽取。运行 `python3 scripts/take_copy.py list` 查看状态，再运行：
+
+```sh
+python3 scripts/take_copy.py take copy-001 --max-chars 220
+```
+
+它会把选中的完整段落送入本页的格式化脚本，默认清理 emoji 和标点，再写入 `inputs/台本/copy-001.txt`。格式化成功后，文案池中的该段才会标记为 `已取`；失败时仍保持 `待取`。超长段落在清理后按固定字符数硬切，完全不寻找句号、分句或意义边界；分块文件和清单保存在 `outputs/文案切块/copy-001/` 与台本旁的 `.chunks.json`。
+
 ## 长文切分
 
-默认 `--split-mode auto --max-chars 220`：先尊重空行分出的段落，把相邻短段合并到长度上限；超长段落再沿句号、问号、感叹号和分句标点拆开。也可以用 `paragraph` 保留每段独立，或用 `sentence` 每句单独成块。没有清楚标点的超长句会在上限附近硬切并补一个逗号，个别情况下可能切到词中间；这种稿子建议先用 `rewrite` 模式补好断句，或手动加入标点。
+默认 `--split-mode auto --max-chars 220`：先尊重空行分出的段落，把相邻短段合并到长度上限；超长段落再沿句号、问号、感叹号和分句标点拆开。也可以用 `paragraph` 保留每段独立，或用 `sentence` 每句单独成块。`fixed` 模式会先规整空白，再按字符数硬切，不参考任何标点和语义；适合严格按文案池原段取用、但单段过长的情况。`none` 则不切块。
 
 ```sh
 python3 scripts/prepare_tts_text.py inputs/原始文本/原文.txt \
