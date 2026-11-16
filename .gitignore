@@ -43,6 +43,7 @@ assets/
 outputs/archieve/
 outputs/试听试验/*
 !outputs/试听试验/README.md
+outputs/文案切块/
 outputs/manifests/
 outputs/compare/
 outputs/asset-index.csv

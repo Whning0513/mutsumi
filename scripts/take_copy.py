@@ -2,13 +2,16 @@
 """Select one explicitly marked copy block, format it, then mark it as used."""
 
 import argparse
+import hashlib
+import json
 import re
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,7 +25,30 @@ class CopySegment:
     segment_id: str
     status: str
     text: str
-    header_index: int
+    header_index: Optional[int]
+    digest: str
+
+
+def text_digest(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def status_path(pool_path: Path) -> Path:
+    return pool_path.with_name(pool_path.stem + ".status.json")
+
+
+def load_status(pool_path: Path) -> dict:
+    path = status_path(pool_path)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError("Could not read status ledger {}: {}".format(path, error)) from error
+    segments = data.get("segments", {})
+    if not isinstance(segments, dict):
+        raise ValueError("Status ledger must contain a 'segments' object: {}".format(path))
+    return segments
 
 
 def parse_pool(pool_path: Path):
@@ -31,6 +57,23 @@ def parse_pool(pool_path: Path):
             "Copy pool not found: {}. Create it and add explicitly marked blocks.".format(pool_path)
         )
     lines = pool_path.read_bytes().decode("utf-8").splitlines(keepends=True)
+    has_markers = any(
+        HEADER.fullmatch(line.rstrip("\r\n").lstrip("\ufeff")) or line.rstrip("\r\n") == END_MARKER
+        for line in lines
+    )
+    if not has_markers:
+        text = "".join(lines)
+        blocks = [part.strip() for part in re.split(r"\r?\n[ \t]*\r?\n+", text) if part.strip()]
+        stored = load_status(pool_path)
+        segments = []
+        for index, block in enumerate(blocks, 1):
+            segment_id = "copy-{:03d}".format(index)
+            digest = text_digest(block)
+            previous = stored.get(segment_id, {})
+            status = "已取" if previous.get("sha256") == digest and previous.get("status") == "已取" else "待取"
+            segments.append(CopySegment(segment_id, status, block, None, digest))
+        return lines, segments, "paragraphs"
+
     segments: List[CopySegment] = []
     ids = set()
     current = None
@@ -62,7 +105,7 @@ def parse_pool(pool_path: Path):
             text = "".join(content).strip()
             if not text:
                 raise ValueError("Copy block {} is empty.".format(segment_id))
-            segments.append(CopySegment(segment_id, status, text, header_index))
+            segments.append(CopySegment(segment_id, status, text, header_index, text_digest(text)))
             current = None
             content = []
             continue
@@ -76,20 +119,50 @@ def parse_pool(pool_path: Path):
 
     if current is not None:
         raise ValueError("Copy block {} has no {} marker.".format(current[0], END_MARKER))
-    return lines, segments
+    return lines, segments, "marked"
 
 
 def command_list(args: argparse.Namespace) -> None:
-    _, segments = parse_pool(Path(args.pool).expanduser().resolve())
+    _, segments, mode = parse_pool(Path(args.pool).expanduser().resolve())
     if not segments:
         print("No copy blocks yet. Add marked blocks to {}.".format(args.pool))
         return
+    print("Segmentation: {}".format("blank-line paragraphs" if mode == "paragraphs" else "explicit markers"))
     print("ID\t状态\t字符数")
     for segment in segments:
         print("{}\t{}\t{}".format(segment.segment_id, segment.status, len(segment.text)))
 
 
-def mark_as_used(pool_path: Path, lines: List[str], segment: CopySegment) -> None:
+def mark_as_used(
+    pool_path: Path,
+    lines: List[str],
+    segments: List[CopySegment],
+    segment: CopySegment,
+    mode: str,
+    output: Path,
+) -> None:
+    if mode == "paragraphs":
+        stored = load_status(pool_path)
+        current = {item.segment_id: item.digest for item in segments}
+        entries = {
+            key: value for key, value in stored.items()
+            if key in current and value.get("sha256") == current[key]
+        }
+        entries[segment.segment_id] = {
+            "sha256": segment.digest,
+            "status": "已取",
+            "output": str(output),
+            "taken_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        }
+        payload = {"version": 1, "segments": entries}
+        target = status_path(pool_path)
+        temporary = target.with_name(target.name + ".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.replace(target)
+        return
+
+    if segment.header_index is None:
+        raise ValueError("Cannot mark this segment in the source file.")
     original = lines[segment.header_index]
     newline = "\r\n" if original.endswith("\r\n") else "\n" if original.endswith("\n") else ""
     bom = "\ufeff" if segment.header_index == 0 and original.startswith("\ufeff") else ""
@@ -101,7 +174,7 @@ def mark_as_used(pool_path: Path, lines: List[str], segment: CopySegment) -> Non
 
 def command_take(args: argparse.Namespace) -> None:
     pool_path = Path(args.pool).expanduser().resolve()
-    _, segments = parse_pool(pool_path)
+    _, segments, mode = parse_pool(pool_path)
     matches = [segment for segment in segments if segment.segment_id == args.segment_id]
     if not matches:
         raise ValueError("No copy block with ID {}.".format(args.segment_id))
@@ -143,13 +216,13 @@ def command_take(args: argparse.Namespace) -> None:
         raise
 
     # Re-read after formatting so edits or newly appended blocks are preserved.
-    latest_lines, latest_segments = parse_pool(pool_path)
+    latest_lines, latest_segments, latest_mode = parse_pool(pool_path)
     latest_matches = [item for item in latest_segments if item.segment_id == segment.segment_id]
-    if not latest_matches or latest_matches[0].status != "待取":
+    if latest_mode != mode or not latest_matches or latest_matches[0].status != "待取":
         raise ValueError("Copy pool changed while formatting; output exists but the block was not marked.")
-    if latest_matches[0].text != segment.text:
+    if latest_matches[0].digest != segment.digest:
         raise ValueError("Selected copy changed while formatting; output exists but the block was not marked.")
-    mark_as_used(pool_path, latest_lines, latest_matches[0])
+    mark_as_used(pool_path, latest_lines, latest_segments, latest_matches[0], mode, output)
     print("Marked {} as 已取.".format(segment.segment_id))
 
 

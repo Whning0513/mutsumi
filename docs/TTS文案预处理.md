@@ -14,13 +14,13 @@ python3 scripts/prepare_tts_text.py inputs/原始文本/原文.txt \
 
 ## 从连续文案池取段
 
-长期积累的原文放在 `inputs/原始文本/文案池.txt`。用 `@@@ id=唯一ID status=待取 @@@` 和 `@@@ end @@@` 明确界定每一段；取用时按 ID 整段选取，不从段落中按句子或语义抽取。运行 `python3 scripts/take_copy.py list` 查看状态，再运行：
+长期积累的原文放在 `inputs/原始文本/文案池.txt`，每段之间留一个空行；空行是唯一的取稿边界，段内换行不会拆段。工具按顺序生成 `copy-001`、`copy-002` 等 ID；只在末尾追加文案可保持旧 ID 稳定。运行 `python3 scripts/take_copy.py list` 查看状态，再按 ID 取完整一段：
 
 ```sh
 python3 scripts/take_copy.py take copy-001 --max-chars 220
 ```
 
-它会把选中的完整段落送入本页的格式化脚本，默认清理 emoji 和标点，再写入 `inputs/台本/copy-001.txt`。格式化成功后，文案池中的该段才会标记为 `已取`；失败时仍保持 `待取`。超长段落在清理后按固定字符数硬切，完全不寻找句号、分句或意义边界；分块文件和清单保存在 `outputs/文案切块/copy-001/` 与台本旁的 `.chunks.json`。
+它会把选中的完整段落送入本页的格式化脚本，默认清理 emoji 和标点，再写入 `inputs/台本/copy-001.txt`。格式化成功后，状态才在 `inputs/原始文本/文案池.status.json` 中标记为 `已取`；失败时保持待取。原文池只保存文案，不插入状态标记。超长段落在清理后按固定字符数硬切，完全不寻找句号、分句或意义边界；分块文件和清单保存在 `outputs/文案切块/copy-001/` 与台本旁的 `.chunks.json`。
 
 ## 长文切分
 
