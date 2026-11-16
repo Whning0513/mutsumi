@@ -41,7 +41,7 @@ def main() -> None:
     model = root / "models/archive/qwen3-tts-bang-dream"
     rvc_model = root / "models/rvc/mutsumi-rvc/mutsumi.pth"
     rvc_index = root / "models/rvc/mutsumi-rvc/added_IVF345_Flat_nprobe_1_mutsumi_v2.index"
-    text_path = (args.text_file or root / "scripts/若叶睦_太阳宣言_测试文本.txt").expanduser().resolve()
+    text_path = (args.text_file or root / "inputs/台本/若叶睦_太阳宣言_测试文本.txt").expanduser().resolve()
     output_dir = root / "outputs/试听试验"
     source_path = output_dir / "若叶睦_Qwen_太阳宣言_原声.wav"
     selected = list(VARIANTS) if not args.variants else [item.strip() for item in args.variants.split(",") if item.strip()]

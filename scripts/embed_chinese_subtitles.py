@@ -25,7 +25,7 @@ try:
 except ImportError as exc:  # pragma: no cover - exercised by the CLI error path
     raise SystemExit(
         "Pillow is required to render outlined Chinese text. Install it with: "
-        "python3 -m pip install --user -r scripts/requirements-subtitles.txt"
+        "python3 -m pip install --user -r requirements/subtitles.txt"
     ) from exc
 
 

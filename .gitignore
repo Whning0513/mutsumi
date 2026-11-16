@@ -3,8 +3,18 @@ config/local.toml
 .env
 .env.*
 !.env.example
-scripts/*.txt
-!scripts/requirements-subtitles.txt
+inputs/*
+!inputs/README.md
+!inputs/台本/
+!inputs/原始文本/
+!inputs/小剧场/
+inputs/台本/*
+!inputs/台本/README.md
+inputs/原始文本/*
+!inputs/原始文本/README.md
+inputs/小剧场/*
+!inputs/小剧场/README.md
+!inputs/小剧场/示例小剧场.json
 
 # Python build/runtime files
 __pycache__/

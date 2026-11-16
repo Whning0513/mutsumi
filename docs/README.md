@@ -12,4 +12,6 @@
 | [TTS 文案预处理](TTS文案预处理.md) | 朗读稿清理、断句和批量切块 |
 | [字幕自动对齐与嵌入](字幕自动对齐.md) | 中文字幕对齐、校对和视频封装命令 |
 
+输入材料放在仓库根目录的 `inputs/`：朗读台本和字幕稿放 `台本/`，未经清理的文案放 `原始文本/`，结构化小剧场放 `小剧场/`。`scripts/` 仅存可执行工具。
+
 素材与数据集说明见 [`training_data/README.md`](../training_data/README.md)。本地基线目录的索引在 `outputs/基线/README.md`；旧试听归档索引在 `outputs/archieve/20261116_cleanup/README.md`。音频和归档内容只在本机工作区保存，不提交到 GitHub。

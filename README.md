@@ -27,8 +27,10 @@ The confirmed WAVs, models, training/reference audio, dialogue text, and video a
 ## Project map
 
 - `voca/`: unified CLI for synthesis dispatch, profiles, manifests, QC, indexing, comparison, archive, and scenes.
-- `scripts/`: Qwen/GSV/RVC CPU wrappers, text preparation, F0 inspection, forced alignment, and video rendering.
-- `configs/`: example project settings, named profiles, and a generic scene template.
+- `scripts/`: executable Python and shell tools for synthesis, text preparation, F0 inspection, forced alignment, and video rendering.
+- `inputs/`: local source material. Put ready-to-read narration and subtitle transcripts in `台本/`, untouched source text in `原始文本/`, and structured short-theater scenes in `小剧场/`. Private inputs are ignored by Git; the example scene and folder guides are tracked.
+- `requirements/`: pinned dependencies for optional workflows such as subtitle rendering.
+- `configs/`: example project settings and named voice profiles.
 - `docs/`: setup, reproducible baselines, model/environment notes, and workflow improvements.
 - `outputs/`, `videos/`, `training_data/`, `models/`, `frameworks/`, `assets/`: local working data; ignored by Git where appropriate.
 
